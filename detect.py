@@ -104,7 +104,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         pred = model(img,
                      augment=None,
                      visualize=increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False)[0]
-        print('pred_pre=', pred)
+        #print('pred_pre=', pred)
         # Apply NMS
         pred = non_max_suppression_face(pred, conf_thres, iou_thres, classes, agnostic_nms)
         t2 = time_sync()
@@ -112,7 +112,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         # Apply Classifier
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
-        print("pred =", pred)
+        #print("pred =", pred)
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -137,16 +137,16 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
                 #add landmarks detect
                 det[:, 5:15] = scale_coords_landmarks(img.shape[2:], det[:, 5:15], im0.shape).round()
-                print("det=", det)
+                #print("det=", det)
                 # Write results
                 #for *xyxy, conf, cls in reversed(det):
                 for j in range(det.size()[0]):
                     xyxy = det[j,:4]
                     conf = det[j,4]
                     cls = det[j,-1]
-                    landmarks = (det[j, 5:15].view(1, 10) / gn_lmk).view(-1).tolist()
-                    print("xyxy=",xyxy)
-                    print("lmk= ",landmarks)
+                    landmarks = (det[j, 5:15].view(1, 10) ).view(-1).tolist()
+                    #print("xyxy=",xyxy)
+                    #print("lmk= ",landmarks)
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, *landmarks, conf) if save_conf else (cls, *xywh, *landmarks)  # label format

@@ -1,6 +1,6 @@
-#import detect
+import detect
 import train
-#import val
+import val
 
 #device = "cuda" if torch.cuda.is_available() else "cpu"
 #print("Using {} device".format(device)+torch.cuda.get_device_name(1))
@@ -12,15 +12,15 @@ def main():
 
 
 def detect_test():
-    detect.run(weights='yolov5_weights_210723/best100.pt', source='data/images/big face/', device='cpu',visualize=True)
+    detect.run(weights='weights\\facemaster_hyp_140best.pt', source='0', device='cpu')
 
 
 def val_():
-    val.run(weights='yolov5_weights_210723/yolov5s-face.pt', batch_size=32, device='cpu', name='test_lmk',project="test",
+    val.run(weights='weights\\facemaster_hyp_140best.pt', batch_size=32, device='cpu', name='test_lmk',project="test",
             data='data/widerface_w_landmarks.yaml', single_cls = True,task='val', imgsz=640 )
 
 
 if __name__ == '__main__':
-   main()
-   #val_()
+   #main()
+   val_()
    #detect_test()

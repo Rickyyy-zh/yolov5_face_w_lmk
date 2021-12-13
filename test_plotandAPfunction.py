@@ -1,17 +1,22 @@
 import torch
+import torchvision
+from torch.utils.data import DataLoader, TensorDataset
 from pathlib import Path
 import numpy as np
+from torchvision.models.resnet import resnet50
 from utils.torch_utils import select_device,time_sync
 
 from models.experimental import attempt_load
 from utils.face_datasets import create_dataloader
 from utils.metrics import ConfusionMatrix ,ap_per_class
-
+from utils.datasets import IMG_FORMATS, letterbox
 from tqdm import tqdm
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
-    box_iou, non_max_suppression,non_max_suppression_face, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
+    box_iou, non_max_suppression,non_max_suppression_face,scale_coords, scale_coords_landmarks, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
 from threading import Thread
 from utils.plots import plot_images, output_to_target, plot_one_box
+import cv2
+
 class Params:
     def setKpParams(self):
         self.imgIds = []
@@ -76,7 +81,7 @@ def process_batch(predictions, labels, iouv):
     # Evaluate 1 batch of predictions
     correct = torch.zeros(predictions.shape[0], len(iouv), dtype=torch.bool, device=iouv.device)
     detected = []  # label indices
-    tcls, pcls = labels[:, 0], predictions[:, 5]
+    tcls, pcls = labels[:, 0], predictions[:, 15]
     nl = labels.shape[0]  # number of labels
     for cls in torch.unique(tcls):
         ti = (cls == tcls).nonzero().view(-1)  # label indices
@@ -107,7 +112,7 @@ def main(weights, batch_size = 16, device = 'cpu'):
     model.half().float()
     model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     dataloader = create_dataloader(img_path, imgsz, batch_size, gs,False, pad=0.5, rect=True)[0]
-    
+    save_hybrid = False
     
     seen = 0
     #confusion_matrix = ConfusionMatrix(nc=nc)
@@ -117,6 +122,7 @@ def main(weights, batch_size = 16, device = 'cpu'):
     p, r, f1, mp, mr, map50, map, t0, t1, t2 = 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.
     #loss = torch.zeros(4, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
+    oks_p, oks_t = [],[] #list to storage lmks and labels
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t_ = time_sync()
         img = img.to(device, non_blocking=True)
@@ -137,7 +143,8 @@ def main(weights, batch_size = 16, device = 'cpu'):
 
         # Run NMS
         targets[:, 2:6] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
-        #lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+        targets[:, 6:16] *= torch.Tensor([width, height, width, height,width, height, width, height,width, height]).to(device)
+        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
         t = time_sync()
         out = non_max_suppression_face(out, 0.001, 0.6, labels=[])
         t2 += time_sync() - t
@@ -155,21 +162,21 @@ def main(weights, batch_size = 16, device = 'cpu'):
                 continue
 
             # Predictions
-
             predn = pred.clone()
             scale_coords(img[si].shape[1:], predn[:, :4], shape, shapes[si][1])  # native-space pred
-
+            scale_coords_landmarks(img[si].shape[1:], predn[:, 5:15], shape, shapes[si][1])
             # Evaluate
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
+                landmarks = labels[:,5:15]
                 scale_coords(img[si].shape[1:], tbox, shape, shapes[si][1])  # native-space labels
+                scale_coords_landmarks(img[si].shape[1:], landmarks, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
                 correct = process_batch(predn, labelsn, iouv)
 
             else:
                 correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool)
-            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))  # (correct, conf, pcls, tcls)
-            print(pred[:,4])
+            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 15].cpu(), tcls))  # (correct, conf, pcls, tcls)
         # Plot images
         f = './runs/testPic'
         f1 = f+'/oriPic'
@@ -204,6 +211,39 @@ def main(weights, batch_size = 16, device = 'cpu'):
         shape = (batch_size, 3, imgsz, imgsz)
         print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
 """
+def test_det(weights, device):
+    imgsz = 640
+    img_path = 'data/widerfacetest100_wrong/images/val/trainwider_2046.jpg'
+    model = attempt_load(weights,map_location=device)
+    model.half().float()
+    model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+    gs = max(int(model.stride.max()), 32)
+    img = cv2.imread(img_path)
+    h0, w0 = img.shape[:2]  # orig hw
+    r = imgsz / max(h0, w0)  # resize image to img_size
+    if r != 1:  # always resize down, only resize up if training with augmentation
+        interp = cv2.INTER_AREA if r < 1  else cv2.INTER_LINEAR
+        img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+    img = letterbox(img, new_shape=imgsz)[0]
+    img = img[:, :, ::-1].transpose(2, 0, 1).copy()
+    img = torch.from_numpy(img).to(device)
+    img = img.float()  # uint8 to fp16/32
+    img /= 255.0  # 0 - 255 to 0.0 - 1.0
+    img = img.unsqueeze(0)
+    out = model(img)[0]
+    out = non_max_suppression_face(out, 0.001, 0.6, labels=[])
+    print(out)
+
+
+def det_torchpretrain():
+    res_model = torchvision.models.resnet50(pretrained=True)
+    img0 = cv2.imread('data/images/big face/trainwider_1.jpg')
+    img = torch.tensor(img0)
+    img = 
+    y = res_model(img)
+    print(y)
 
 if __name__ == "__main__":
-    main(weights= 'weights\stem_lr0.005_100.pt',batch_size = 16, device = 'cpu')
+    #main(weights= 'weights\\facemaster_hyp_140best.pt',batch_size = 16, device = 'cpu')
+    #test_det(weights= 'weights\stem_lr0.005_100.pt', device = 'cpu')
+    det_torchpretrain()
